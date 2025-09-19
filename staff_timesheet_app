@@ -33,7 +33,7 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged, OAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, addDoc, onSnapshot, setDoc, getDocs, query, where, updateDoc, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -42,7 +42,6 @@
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         let db, auth, userId, currentHome = null;
         let unsubscribeRotas = null;
@@ -64,55 +63,21 @@
                 auth = getAuth(app);
                 db = getFirestore(app);
 
-                onAuthStateChanged(auth, async (user) => {
-                    const contentArea = document.getElementById('mainContent');
-                    const loginScreen = document.getElementById('loginScreen');
+                // Sign in anonymously to get a user ID for Firestore security rules
+                await signInAnonymously(auth);
+                userId = auth.currentUser.uid;
+                
+                // Show the main content and attach listeners
+                document.getElementById('mainContent').classList.remove('hidden');
+                document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
+                attachListeners();
 
-                    if (user) {
-                        userId = user.uid;
-                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
-                        console.log("Firebase initialized and user authenticated:", userId);
-                        loginScreen.classList.add('hidden');
-                        contentArea.classList.remove('hidden');
-                        attachListeners();
-                    } else {
-                        userId = null;
-                        document.getElementById('userIdDisplay').textContent = '';
-                        loginScreen.classList.remove('hidden');
-                        contentArea.classList.add('hidden');
-                        console.log("User not authenticated.");
-                    }
-                });
-
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                }
             } catch (error) {
                 console.error("Error initializing Firebase:", error);
                 showMessage("Failed to connect to the database. Please check your connection.");
             }
         }
-
-        async function signInWithMicrosoft() {
-            const provider = new OAuthProvider('microsoft.com');
-            try {
-                await signInWithPopup(auth, provider);
-            } catch (error) {
-                console.error("Error during Microsoft sign-in:", error);
-                showMessage("Microsoft sign-in failed. Please try again.");
-            }
-        }
-
-        async function handleSignOut() {
-            try {
-                await signOut(auth);
-                showMessage("You have been signed out.");
-            } catch (error) {
-                console.error("Error during sign-out:", error);
-                showMessage("Sign out failed. Please try again.");
-            }
-        }
-
+        
         // Initialize Firebase on page load
         window.onload = initFirebase;
 
@@ -124,7 +89,6 @@
                 document.getElementById('editModal').style.display = 'none';
             });
             document.getElementById('filterDate').addEventListener('change', compareData);
-            document.getElementById('signOutButton').addEventListener('click', handleSignOut);
             document.getElementById('addTestDataButton').addEventListener('click', addTestData);
             document.getElementById('homeSelect').addEventListener('change', (e) => {
                 currentHome = e.target.value;
@@ -565,28 +529,12 @@
 
     </script>
 
-    <!-- Login Screen -->
-    <div id="loginScreen" class="absolute inset-0 flex items-center justify-center p-6 transition-opacity duration-500">
-        <div class="bg-white p-8 rounded-xl shadow-lg text-center max-w-sm w-full space-y-6">
-            <h2 class="text-3xl font-bold text-gray-800">Staffing App</h2>
-            <p class="text-gray-600">Please sign in to continue.</p>
-            <button onclick="signInWithMicrosoft()"
-                    class="w-full p-3 bg-blue-600 text-white font-semibold rounded-md shadow-md hover:bg-blue-700 transition duration-200">
-                Sign in with Microsoft
-            </button>
-        </div>
-    </div>
-
     <!-- Main Content Grid -->
     <div id="mainContent" class="max-w-7xl mx-auto space-y-8 hidden">
         <header class="text-center flex flex-col md:flex-row justify-between items-center mb-6 space-y-4 md:space-y-0">
             <h1 class="text-4xl font-bold text-gray-900">Staffing App</h1>
             <div class="flex items-center space-x-4">
                  <p id="userIdDisplay" class="text-sm text-gray-500 truncate"></p>
-                 <button id="signOutButton"
-                         class="p-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition duration-200">
-                     Sign Out
-                 </button>
             </div>
         </header>
 
