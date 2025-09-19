@@ -30,22 +30,11 @@
 </head>
 <body class="bg-gray-100 min-h-screen p-6 md:p-10">
 
-    <!-- Firebase SDKs -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, collection, addDoc, onSnapshot, setDoc, getDocs, query, where, updateDoc, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        setLogLevel('Debug');
-
-        // Global variables provided by the environment
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-
-        let db, auth, userId, currentHome = null;
-        let unsubscribeRotas = null;
-        let unsubscribeTimesheets = null;
+    <!-- JavaScript for app logic -->
+    <script>
+        let allRotas = [];
+        let allTimesheets = [];
+        let currentHome = null;
 
         function showMessage(message) {
             const modal = document.getElementById('messageModal');
@@ -57,33 +46,9 @@
             }, 3000);
         }
 
-        async function initFirebase() {
-            try {
-                const app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
-
-                // Sign in anonymously to get a user ID for Firestore security rules
-                await signInAnonymously(auth);
-                userId = auth.currentUser.uid;
-                
-                // Show the main content and attach listeners
-                document.getElementById('mainContent').classList.remove('hidden');
-                document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
-                attachListeners();
-
-            } catch (error) {
-                console.error("Error initializing Firebase:", error);
-                showMessage("Failed to connect to the database. Please check your connection.");
-            }
-        }
-        
-        // Initialize Firebase on page load
-        window.onload = initFirebase;
-
         function attachListeners() {
             document.getElementById('addRotaForm').addEventListener('submit', handleAddRota);
-            document.getElementById('signInForm').addEventListener('submit', handleSignIn);
+            document.getElementById('submitTimesheetForm').addEventListener('submit', handleSubmitTimesheet);
             document.getElementById('editForm').addEventListener('submit', handleEditFormSubmit);
             document.getElementById('closeEditModal').addEventListener('click', () => {
                 document.getElementById('editModal').style.display = 'none';
@@ -113,36 +78,21 @@
                 document.getElementById('staffReportList').innerHTML = '<p class="text-gray-500">Please select a home.</p>';
             }
         }
-        
+
+        window.onload = attachListeners;
+
         function loadDataForHome() {
-            // Unsubscribe from previous listeners
-            if (unsubscribeRotas) unsubscribeRotas();
-            if (unsubscribeTimesheets) unsubscribeTimesheets();
+            // Filter in-memory data for the selected home
+            const rotasForHome = allRotas.filter(r => r.home === currentHome);
+            const timesheetsForHome = allTimesheets.filter(t => t.home === currentHome);
             
-            const rotasQuery = query(collection(db, `/artifacts/${appId}/public/data/rotas`), where("home", "==", currentHome));
-            const timesheetsQuery = query(collection(db, `/artifacts/${appId}/public/data/timesheets`), where("home", "==", currentHome));
-
-            unsubscribeRotas = onSnapshot(rotasQuery, (snapshot) => {
-                const rotas = [];
-                snapshot.forEach(doc => {
-                    rotas.push({ id: doc.id, ...doc.data() });
-                });
-                displayRotas(rotas);
-                compareData();
-            });
-
-            unsubscribeTimesheets = onSnapshot(timesheetsQuery, (snapshot) => {
-                const timesheets = [];
-                snapshot.forEach(doc => {
-                    timesheets.push({ id: doc.id, ...doc.data() });
-                });
-                displayTimesheets(timesheets);
-                compareData();
-                generateStaffReport();
-            });
+            displayRotas(rotasForHome);
+            displayTimesheets(timesheetsForHome);
+            compareData();
+            generateStaffReport();
         }
 
-        async function handleAddRota(event) {
+        function handleAddRota(event) {
             event.preventDefault();
             const name = document.getElementById('rotaName').value;
             const category = document.getElementById('rotaCategory').value;
@@ -156,116 +106,54 @@
                 return;
             }
 
-            try {
-                await addDoc(collection(db, `/artifacts/${appId}/public/data/rotas`), {
-                    home,
-                    name,
-                    category,
-                    date,
-                    startTime,
-                    endTime,
-                    createdAt: new Date()
-                });
-                showMessage("Rota shift added successfully!");
-                document.getElementById('addRotaForm').reset();
-            } catch (e) {
-                console.error("Error adding rota document:", e);
-                showMessage("Error adding rota. Please try again.");
-            }
+            const newRota = {
+                id: Date.now().toString(), // Simple unique ID
+                home,
+                name,
+                category,
+                date,
+                startTime,
+                endTime,
+            };
+            allRotas.push(newRota);
+            showMessage("Rota shift added successfully!");
+            document.getElementById('addRotaForm').reset();
+            loadDataForHome(); // Refresh the UI
         }
 
-        // New function to handle staff sign-in
-        async function handleSignIn(event) {
+        function handleSubmitTimesheet(event) {
             event.preventDefault();
             const name = document.getElementById('timesheetName').value;
+            const date = document.getElementById('timesheetDate').value;
+            const startTime = document.getElementById('timesheetStartTime').value;
+            const endTime = document.getElementById('timesheetEndTime').value;
             const home = document.getElementById('homeSelect').value;
-            const signInTime = Timestamp.now();
-            const date = new Date().toISOString().split('T')[0];
-
-            if (!home || !name) {
-                showMessage("Staff name and home are required for sign-in.");
+            const hours = calculateHours(startTime, endTime);
+            
+            if (!home || !name || !date || !startTime || !endTime) {
+                showMessage("All timesheet fields are required.");
                 return;
             }
 
-            try {
-                // Check if the user is already signed in at this home
-                const q = query(collection(db, `/artifacts/${appId}/public/data/signins`),
-                    where("name", "==", name),
-                    where("home", "==", home),
-                    where("signOutTime", "==", null));
-                const querySnapshot = await getDocs(q);
-
-                if (!querySnapshot.empty) {
-                    showMessage("You are already signed in.");
-                    return;
-                }
-
-                await addDoc(collection(db, `/artifacts/${appId}/public/data/signins`), {
-                    name,
-                    home,
-                    signInTime,
-                    date,
-                    signOutTime: null
-                });
-                showMessage("You have been signed in.");
-                document.getElementById('timesheetName').disabled = true;
-                document.getElementById('signInButton').classList.add('hidden');
-                document.getElementById('signOutButtonForm').classList.remove('hidden');
-
-            } catch (e) {
-                console.error("Error during sign-in:", e);
-                showMessage("Failed to sign in. Please try again.");
+            if (hours <= 0) {
+                showMessage("End time must be after start time.");
+                return;
             }
-        }
 
-        // New function to handle staff sign-out
-        async function handleSignOutForm(event) {
-            event.preventDefault();
-            const name = document.getElementById('timesheetName').value;
-            const home = document.getElementById('homeSelect').value;
-
-            try {
-                const q = query(collection(db, `/artifacts/${appId}/public/data/signins`),
-                    where("name", "==", name),
-                    where("home", "==", home),
-                    where("signOutTime", "==", null));
-                const querySnapshot = await getDocs(q);
-
-                if (querySnapshot.empty) {
-                    showMessage("You are not currently signed in.");
-                    return;
-                }
-
-                const docToUpdate = querySnapshot.docs[0];
-                const signInTime = docToUpdate.data().signInTime.toDate();
-                const signOutTime = new Date();
-                
-                const hours = (signOutTime - signInTime) / (1000 * 60 * 60);
-
-                // Update the signin record
-                await updateDoc(docToUpdate.ref, {
-                    signOutTime: Timestamp.fromDate(signOutTime)
-                });
-
-                // Add a new timesheet record
-                await addDoc(collection(db, `/artifacts/${appId}/public/data/timesheets`), {
-                    home,
-                    name,
-                    date: signOutTime.toISOString().split('T')[0],
-                    startTime: signInTime.toTimeString().slice(0, 5),
-                    endTime: signOutTime.toTimeString().slice(0, 5),
-                    hours: parseFloat(hours.toFixed(2)),
-                    createdAt: new Date()
-                });
-                showMessage("Timesheet submitted successfully!");
-                document.getElementById('timesheetName').disabled = false;
-                document.getElementById('signInButton').classList.remove('hidden');
-                document.getElementById('signOutButtonForm').classList.add('hidden');
-
-            } catch (e) {
-                console.error("Error during sign-out:", e);
-                showMessage("Failed to sign out. Please try again.");
-            }
+            const newTimesheet = {
+                id: Date.now().toString(), // Simple unique ID
+                home,
+                name,
+                date,
+                startTime,
+                endTime,
+                hours: parseFloat(hours.toFixed(2)),
+            };
+            
+            allTimesheets.push(newTimesheet);
+            showMessage("Timesheet submitted successfully!");
+            document.getElementById('submitTimesheetForm').reset();
+            loadDataForHome(); // Refresh the UI
         }
         
         // Helper function to calculate hours between two time strings
@@ -279,17 +167,13 @@
             return (end - start) / (1000 * 60 * 60);
         }
 
-        let allRotas = [];
-        let allTimesheets = [];
-
         function displayRotas(rotas) {
-            allRotas = rotas.sort((a, b) => new Date(a.date) - new Date(b.date));
             const rotaList = document.getElementById('rotaList');
             rotaList.innerHTML = '';
-            if (allRotas.length === 0) {
+            if (rotas.length === 0) {
                 rotaList.innerHTML = '<p class="text-gray-500">No rota shifts planned yet for this home.</p>';
             } else {
-                allRotas.forEach(rota => {
+                rotas.forEach(rota => {
                     const li = document.createElement('li');
                     li.className = "p-4 bg-white rounded-lg shadow-sm flex items-center justify-between";
                     li.innerHTML = `
@@ -309,13 +193,12 @@
         }
 
         function displayTimesheets(timesheets) {
-            allTimesheets = timesheets.sort((a, b) => new Date(a.date) - new Date(b.date));
             const timesheetList = document.getElementById('timesheetList');
             timesheetList.innerHTML = '';
-            if (allTimesheets.length === 0) {
+            if (timesheets.length === 0) {
                 timesheetList.innerHTML = '<p class="text-gray-500">No timesheets submitted yet for this home.</p>';
             } else {
-                allTimesheets.forEach(ts => {
+                timesheets.forEach(ts => {
                     const li = document.createElement('li');
                     li.className = "p-4 bg-white rounded-lg shadow-sm flex items-center justify-between";
                     li.innerHTML = `
@@ -368,59 +251,61 @@
             }
         }
 
-        async function handleEditFormSubmit(event) {
+        function handleEditFormSubmit(event) {
             event.preventDefault();
             const name = document.getElementById('editName').value;
             const date = document.getElementById('editDate').value;
             const startTime = document.getElementById('editStartTime').value;
             const endTime = document.getElementById('editEndTime').value;
-            const home = document.getElementById('homeSelect').value;
 
             if (!name || !date || !startTime || !endTime) {
                 showMessage("All fields are required.");
                 return;
             }
             
-            const updateData = {
-                name,
-                date,
-                startTime,
-                endTime,
-                home // Add home to the update data
-            };
-
+            let docToUpdate;
             if (editingDocType === 'rota') {
-                updateData.category = document.getElementById('editCategory').value;
+                docToUpdate = allRotas.find(r => r.id === editingDocId);
             } else {
-                const hours = calculateHours(startTime, endTime);
-                if (hours <= 0) {
-                    showMessage("End time must be after start time.");
-                    return;
-                }
-                updateData.hours = hours;
+                docToUpdate = allTimesheets.find(t => t.id === editingDocId);
             }
-            
-            try {
-                const docRef = doc(db, `/artifacts/${appId}/public/data/${editingDocType}s`, editingDocId);
-                await updateDoc(docRef, updateData);
+
+            if (docToUpdate) {
+                docToUpdate.name = name;
+                docToUpdate.date = date;
+                docToUpdate.startTime = startTime;
+                docToUpdate.endTime = endTime;
+
+                if (editingDocType === 'rota') {
+                    docToUpdate.category = document.getElementById('editCategory').value;
+                } else {
+                    const hours = calculateHours(startTime, endTime);
+                    if (hours <= 0) {
+                        showMessage("End time must be after start time.");
+                        return;
+                    }
+                    docToUpdate.hours = hours;
+                }
                 showMessage("Entry updated successfully!");
                 document.getElementById('editModal').style.display = 'none';
-            } catch (e) {
-                console.error("Error updating document:", e);
+                loadDataForHome(); // Refresh the UI
+            } else {
                 showMessage("Error updating entry. Please try again.");
             }
         }
 
-
         function compareData() {
             const filterDate = document.getElementById('filterDate').value;
             
-            let rotasToCompare = allRotas;
-            let timesheetsToCompare = allTimesheets;
+            const rotasForHome = allRotas.filter(r => r.home === currentHome);
+            const timesheetsForHome = allTimesheets.filter(t => t.home === currentHome);
+            
+            let rotasToCompare = rotasForHome;
+            let timesheetsToCompare = timesheetsForHome;
 
             if (filterDate) {
-                rotasToCompare = allRotas.filter(r => r.date === filterDate);
-                timesheetsToCompare = allTimesheets.filter(t => t.date === filterDate);
+                rotasToCompare = rotasForHome.filter(r => r.date === filterDate);
+                timesheetsToCompare = timesheetsForHome.filter(t => t.date === filterDate);
             }
 
             const comparisonList = document.getElementById('comparisonList');
@@ -428,7 +313,7 @@
             const comparisonResults = [];
 
             timesheetsToCompare.forEach(ts => {
-                const matchingRota = rotasToCompare.find(rota => rota.name === ts.name && rota.date === ts.date && rota.home === ts.home);
+                const matchingRota = rotasToCompare.find(rota => rota.name === ts.name && rota.date === ts.date);
                 const plannedHours = matchingRota ? calculateHours(matchingRota.startTime, matchingRota.endTime) : 0;
                 
                 let status = 'Match';
@@ -475,7 +360,7 @@
         // New function to generate staff reports
         function generateStaffReport() {
             const staffHours = {};
-            allTimesheets.forEach(ts => {
+            allTimesheets.filter(t => t.home === currentHome).forEach(ts => {
                 staffHours[ts.name] = (staffHours[ts.name] || 0) + ts.hours;
             });
 
@@ -499,43 +384,31 @@
             }
         }
         
-        async function addTestData() {
-            const rotaData = [
-                { home: 'Happy Home', name: 'John Doe', category: 'carer day', date: '2025-09-17', startTime: '08:00', endTime: '16:00' },
-                { home: 'Happy Home', name: 'Jane Smith', category: 'nurse day', date: '2025-09-17', startTime: '08:00', endTime: '16:00' },
-                { home: 'Happy Home', name: 'John Doe', category: 'carer day', date: '2025-09-18', startTime: '08:00', endTime: '16:00' },
-                { home: 'Serene Care', name: 'Jane Smith', category: 'nurse nights', date: '2025-09-17', startTime: '20:00', endTime: '04:00' }, // Shift across midnight
-                { home: 'Serene Care', name: 'Mark Wilson', category: 'carer nights', date: '2025-09-18', startTime: '20:00', endTime: '04:00' },
+        function addTestData() {
+            allRotas = [
+                { id: '1', home: 'Happy Home', name: 'John Doe', category: 'carer day', date: '2025-09-17', startTime: '08:00', endTime: '16:00' },
+                { id: '2', home: 'Happy Home', name: 'Jane Smith', category: 'nurse day', date: '2025-09-17', startTime: '08:00', endTime: '16:00' },
+                { id: '3', home: 'Happy Home', name: 'John Doe', category: 'carer day', date: '2025-09-18', startTime: '08:00', endTime: '16:00' },
+                { id: '4', home: 'Serene Care', name: 'Jane Smith', category: 'nurse nights', date: '2025-09-17', startTime: '20:00', endTime: '04:00' },
+                { id: '5', home: 'Serene Care', name: 'Mark Wilson', category: 'carer nights', date: '2025-09-18', startTime: '20:00', endTime: '04:00' },
             ];
 
-            const timesheetData = [
-                { home: 'Happy Home', name: 'John Doe', date: '2025-09-17', startTime: '08:00', endTime: '16:00' }, // Match
-                { home: 'Happy Home', name: 'Jane Smith', date: '2025-09-17', startTime: '08:00', endTime: '16:30' }, // Discrepancy
-                { home: 'Happy Home', name: 'John Doe', date: '2025-09-18', startTime: '08:00', endTime: '15:30' }, // Discrepancy
-                { home: 'Serene Care', name: 'Peter Jones', date: '2025-09-18', startTime: '09:00', endTime: '17:00' }, // No rota
+            allTimesheets = [
+                { id: '101', home: 'Happy Home', name: 'John Doe', date: '2025-09-17', startTime: '08:00', endTime: '16:00', hours: 8 },
+                { id: '102', home: 'Happy Home', name: 'Jane Smith', date: '2025-09-17', startTime: '08:00', endTime: '16:30', hours: 8.5 },
+                { id: '103', home: 'Happy Home', name: 'John Doe', date: '2025-09-18', startTime: '08:00', endTime: '15:30', hours: 7.5 },
+                { id: '104', home: 'Serene Care', name: 'Peter Jones', date: '2025-09-18', startTime: '09:00', endTime: '17:00', hours: 8 },
             ];
             
-            try {
-                const addRotas = rotaData.map(data => addDoc(collection(db, `/artifacts/${appId}/public/data/rotas`), { ...data, createdAt: new Date() }));
-                const addTimesheets = timesheetData.map(data => addDoc(collection(db, `/artifacts/${appId}/public/data/timesheets`), { ...data, hours: calculateHours(data.startTime, data.endTime), createdAt: new Date() }));
-
-                await Promise.all([...addRotas, ...addTimesheets]);
-                showMessage("Test data added successfully!");
-            } catch (e) {
-                console.error("Error adding test data:", e);
-                showMessage("Failed to add test data. Please try again.");
-            }
+            showMessage("Test data added successfully!");
+            loadDataForHome(); // Refresh the UI
         }
-
     </script>
 
     <!-- Main Content Grid -->
-    <div id="mainContent" class="max-w-7xl mx-auto space-y-8 hidden">
+    <div id="mainContent" class="max-w-7xl mx-auto space-y-8">
         <header class="text-center flex flex-col md:flex-row justify-between items-center mb-6 space-y-4 md:space-y-0">
             <h1 class="text-4xl font-bold text-gray-900">Staffing App</h1>
-            <div class="flex items-center space-x-4">
-                 <p id="userIdDisplay" class="text-sm text-gray-500 truncate"></p>
-            </div>
         </header>
 
         <main class="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -589,22 +462,24 @@
 
                 <hr class="border-gray-200">
 
-                <!-- Sign In / Sign Out Section -->
+                <!-- Submit Timesheet Form -->
                 <section>
-                    <h2 class="text-2xl font-semibold text-gray-800 mb-4">Sign In / Out</h2>
-                    <form id="signInForm" class="space-y-4">
-                        <input type="text" id="timesheetName" placeholder="Your Name" required
+                    <h2 class="text-2xl font-semibold text-gray-800 mb-4">Submit Timesheet</h2>
+                    <form id="submitTimesheetForm" class="space-y-4">
+                        <input type="text" id="timesheetName" placeholder="Staff Name" required
+                               class="w-full p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 transition duration-200">
+                        <input type="date" id="timesheetDate" required
                                class="w-full p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 transition duration-200">
                         <div class="flex gap-4">
-                            <button type="submit" id="signInButton"
-                                    class="w-full p-3 bg-emerald-600 text-white font-semibold rounded-md shadow-md hover:bg-emerald-700 transition duration-200">
-                                Sign In
-                            </button>
-                            <button type="button" id="signOutButtonForm"
-                                    class="w-full p-3 bg-red-600 text-white font-semibold rounded-md shadow-md hover:bg-red-700 transition duration-200 hidden" onclick="handleSignOutForm(event)">
-                                Sign Out
-                            </button>
+                            <input type="time" id="timesheetStartTime" required
+                                   class="w-full p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 transition duration-200">
+                            <input type="time" id="timesheetEndTime" required
+                                   class="w-full p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 transition duration-200">
                         </div>
+                        <button type="submit"
+                                class="w-full p-3 bg-emerald-600 text-white font-semibold rounded-md shadow-md hover:bg-emerald-700 transition duration-200">
+                            Submit Timesheet
+                        </button>
                     </form>
                 </section>
                 
@@ -612,7 +487,7 @@
                 
                 <section>
                     <h2 class="text-2xl font-semibold text-gray-800 mb-4">Populate with Test Data</h2>
-                    <p class="text-gray-600 mb-4">Click below to add sample rota and timesheet entries to the app.</p>
+                    <p class="text-gray-600 mb-4">Click below to add sample rota and timesheet entries.</p>
                     <button id="addTestDataButton"
                             class="w-full p-3 bg-gray-500 text-white font-semibold rounded-md shadow-md hover:bg-gray-600 transition duration-200">
                         Add Test Data
